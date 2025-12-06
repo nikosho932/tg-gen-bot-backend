@@ -19,8 +19,8 @@ if (!API_URL) {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 console.log("🤖 Bot started...");
 
-// временное состояние (in-memory). Для продакшн лучше хранить в Redis/DB.
-const userStates = {}; // userStates[userId] = "waiting_face" | "waiting_body" | null
+// временное состояние
+const userStates = {};
 
 const mainMenuOptions = {
   reply_markup: {
@@ -37,144 +37,178 @@ const cabinetInline = {
     inline_keyboard: [
       [{ text: "📸 Загрузить исходники", callback_data: "upload_sources" }],
       [{ text: "💳 Пополнить баланс", callback_data: "pay" }],
-      [{ text: "🛟 Служба поддержки", callback_data: "support" }]
+      [{ text: "🛟 Служба поддержки", url: "https://t.me/dmitrycalm" }]
     ]
   }
 };
 
-// /start
+// START
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  const payload = { id: msg.from.id, username: msg.from.username, first_name: msg.from.first_name };
 
   try {
-    const res = await axios.post(`${API_URL}/api/user/login`, payload);
-    const user = res.data;
+    const res = await axios.post(`${API_URL}/api/user/login`, {
+      id: msg.from.id,
+      username: msg.from.username,
+      first_name: msg.from.first_name
+    });
 
-    const welcome = `👋 Привет, ${user.first_name || "друг"}!\n\n` +
-                    `Добро пожаловать.\n\n` +
-                    `Ниже меню — выбери действие.`;
+    const welcome = `👋 Привет, ${msg.from.first_name}!\n\nДобро пожаловать!`;
     bot.sendMessage(chatId, welcome, mainMenuOptions);
   } catch (err) {
-    console.error("Start/login error:", err.response?.data || err.message);
-    bot.sendMessage(chatId, "Ошибка при авторизации. Попробуйте позже.");
+    bot.sendMessage(chatId, "Ошибка авторизации");
   }
 });
 
-// обработка текстовых кнопок
+// MAIN MESSAGE HANDLER
 bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
   const text = msg.text;
-  if (!text || text.startsWith("/")) return; // игнор команд и нетекста
+  const chatId = msg.chat.id;
 
-  // Личный кабинет
+  if (!text || text.startsWith("/")) return;
+
   if (text === "👤 Личный кабинет") {
-    try {
-      const res = await axios.post(`${API_URL}/api/user/get`, { id: msg.from.id });
-      const user = res.data;
+    const res = await axios.post(`${API_URL}/api/user/get`, { id: msg.from.id });
+    const user = res.data;
 
-      const created = user.created_at ? new Date(user.created_at).toLocaleDateString() : "—";
-      const photosText = user.photos_added ? "загружены" : "не загружены";
+    const created = user.created_at
+      ? new Date(user.created_at).toLocaleDateString()
+      : "—";
 
-      const msgText = `🗓 Вы с нами с: *${created}*\n` +
-                      `💰 Баланс токенов: *${user.tokens}*\n` +
-                      `📸 Исходники: ${photosText}\n\n` +
-                      `Выберите действие:`;
-      await bot.sendMessage(chatId, msgText, { parse_mode: "Markdown", ...cabinetInline });
-    } catch (err) {
-      console.error("Cabinet error:", err.response?.data || err.message);
-      bot.sendMessage(chatId, "Ошибка получения данных. Попробуйте позже.");
-    }
+    const photos = user.photos_added ? "загружены" : "не загружены";
+
+    bot.sendMessage(
+      chatId,
+      `🗓 Вы с нами с: *${created}*\n` +
+      `💰 Баланс: *${user.tokens}*\n` +
+      `📸 Исходники: ${photos}`,
+      {
+        parse_mode: "Markdown",
+        ...cabinetInline
+      }
+    );
     return;
   }
 
-  // Пригласить друзей (пока заглушка)
   if (text === "👥 Пригласить друзей") {
-    const invite = "Пригласи друзей и получи бонус! Получить реферальную ссылку можете здесь: ";
-    bot.sendMessage(chatId, invite, mainMenuOptions);
-    return;
+    return bot.sendMessage(
+      chatId,
+      "Функция в разработке!",
+      mainMenuOptions
+    );
   }
 
-  // Генерация
+  // GENERATION
   if (text === "🎨 Генерировать изображения") {
     try {
       const res = await axios.post(`${API_URL}/api/user/get`, { id: msg.from.id });
       const user = res.data;
 
       if (!user.photos_added) {
-        return bot.sendMessage(chatId, "📸 Cначала вам необхоимо добавить исходники ТЕЛА и ЛИЦА в личном кабинете (кнопка «Загрузить исходники»).");
+        return bot.sendMessage(
+          chatId,
+          "📸 У вас НЕ загружены FACE и BODY.\nЗайдите в Личный кабинет → Загрузить исходники."
+        );
       }
 
       const costRes = await axios.get(`${API_URL}/api/generation/cost`);
       const cost = costRes.data.cost;
 
       if (user.tokens < cost) {
-        return bot.sendMessage(chatId, `❌ У вас недостаточно токенов. Стоимость генерации — ${cost} токенов. Пополнить баланс токенов можете в личном кабинете`);
+        return bot.sendMessage(
+          chatId,
+          `❌ Недостаточно токенов!\nСтоимость: ${cost}\nВаш баланс: ${user.tokens}`
+        );
       }
 
-      // списываем токены
-      const chargeRes = await axios.post(`${API_URL}/api/user/charge`, { id: msg.from.id, amount: cost });
-      const updatedUser = chargeRes.data;
+      userStates[msg.from.id] = "confirm_generation";
 
-      bot.sendMessage(chatId, "⏳ Генерация запущена. Когда будет готово — пришлём результат.");
-      // Здесь вызывать реальный генератор асинхронно и по готовности отправлять фото.
+      return bot.sendMessage(chatId,
+        `💠 *Стоимость генерации: ${cost} токенов*\n` +
+        `💰 *Ваш баланс: ${user.tokens}*\n\n` +
+        `Продолжаем?`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🚀 Да, погнали!", callback_data: "gen_confirm" }],
+              [{ text: "↩️ Назад", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
     } catch (err) {
-      console.error("Generation error:", err.response?.data || err.message);
-      bot.sendMessage(chatId, "Ошибка при запуске генерации. Попробуйте позже.");
+      bot.sendMessage(chatId, "Ошибка генерации.");
     }
-    return;
   }
 });
 
-// Обработка inline-кнопок (callback_query)
+// INLINE BUTTONS
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const userId = query.from.id;
   const data = query.data;
 
+  if (data === "back_to_menu") {
+    userStates[userId] = null;
+    bot.sendMessage(chatId, "Вы в главном меню", mainMenuOptions);
+    return bot.answerCallbackQuery(query.id);
+  }
+
+  if (data === "gen_confirm") {
+    userStates[userId] = "waiting_generation_face";
+    bot.answerCallbackQuery(query.id);
+    return bot.sendMessage(
+      chatId,
+      "📸 Отправьте *фото лица* для этой генерации.",
+      { parse_mode: "Markdown" }
+    );
+  }
+
   if (data === "upload_sources") {
     userStates[userId] = "waiting_face";
-    await bot.sendMessage(chatId, "📸 Отлично! Сначала отправьте фото *FACE* (лицо).", { parse_mode: "Markdown" });
-    await bot.answerCallbackQuery(query.id);
-    return;
-  }
-
-  if (data === "pay") {
-    await bot.answerCallbackQuery(query.id, { text: "Оплата пока в разработке" });
-    return;
-  }
-
-  if (data === "support") {
-    await bot.answerCallbackQuery(query.id, { text: "Связаться с поддержкой: support@example.com", url: "https://t.me/dmitrycalm"});
-    return;
+    bot.answerCallbackQuery(query.id);
+    return bot.sendMessage(
+      chatId,
+      "📸 Отправьте фото FACE (лицо)"
+    );
   }
 });
 
-// Приём фото (FACE / BODY)
+// PHOTO HANDLER
 bot.on("photo", async (msg) => {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
   const state = userStates[userId];
 
-  if (!state) return; // фото вне контекста
-
   try {
     const fileId = msg.photo[msg.photo.length - 1].file_id;
-    const fileUrl = await bot.getFileLink(fileId); // ссылка на файл Telegram
+    const fileUrl = await bot.getFileLink(fileId);
 
     if (state === "waiting_face") {
       await axios.post(`${API_URL}/api/user/uploadFace`, { userId, fileUrl });
       userStates[userId] = "waiting_body";
-      return bot.sendMessage(chatId, "✅ FACE загружен. Теперь отправьте фото BODY (весь рост).");
+      return bot.sendMessage(chatId, "Теперь отправьте фото BODY.");
     }
 
     if (state === "waiting_body") {
       await axios.post(`${API_URL}/api/user/uploadBody`, { userId, fileUrl });
       userStates[userId] = null;
-      return bot.sendMessage(chatId, "✅ BODY загружен. Исходники успешно сохранены в личном кабинете.");
+      return bot.sendMessage(chatId, "Исходники успешно загружены!");
+    }
+
+    if (state === "waiting_generation_face") {
+      userStates[userId] = null;
+
+      bot.sendMessage(chatId, "⏳ Обрабатываю фото… (заглушка)");
+
+      setTimeout(() => {
+        bot.sendMessage(chatId, "✨ Генерация завершена! (пока заглушка)");
+      }, 3000);
+
+      return;
     }
   } catch (err) {
-    console.error("Photo upload error:", err.response?.data || err.message);
-    bot.sendMessage(chatId, "Ошибка при загрузке фото. Попробуйте ещё раз.");
+    bot.sendMessage(chatId, "Ошибка загрузки фото");
   }
 });
