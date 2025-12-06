@@ -1,0 +1,20 @@
+{
+  "name": "tg-gen-bot-backend",
+  "version": "1.0.0",
+  "main": "bot/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot/index.js",
+    "api": "node api/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.0",
+    "node-fetch": "^3.3.2",
+    "node-telegram-bot-api": "^0.61.0",
+    "@supabase/supabase-js": "^2.42.0"
+  }
+}
